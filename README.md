@@ -13,6 +13,10 @@ Reckon will run on any recent Kali Linux image and is currently wrapping tools a
 
 ``` ./wreckon.sh /home/user/hostlist.txt```
 
+``` ./wreckon.sh --monitor ``` (Interactive network packet capture)
+
+``` ./wreckon.sh -m ``` (Short form for network monitor)
+
 ### Workflow
 Reckon's work flow was designed to provide incremental results so you an progress through manual enumeration while waiting on results from longer scans such as Nikto, Dirb or some NSE Scripts. Again, the intent of this wrapper is to increase time efficiency by minimize wait/downtime. One could run a massive NMAP scan with all possible NSE scripts but you will likely be waiting 3 hours before you even know what ports are open which isn't very efficient.
 

@@ -38,6 +38,16 @@ container_testing=False
 # Enable Infrastructure as Code scanning (Terraform/CloudFormation)
 iac_testing=False
 
+# === NETWORK MONITORING ===
+# Enable tcpdump packet capture monitoring
+network_monitor=False
+# Default network interface (eth0, en0, tun0, etc)
+monitor_interface="eth0"
+# Packet capture filter (empty = all traffic)
+pcap_filter=""
+# Output directory for pcap files
+pcap_output_dir="pcap_captures"
+
 # Color Variables
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -1105,6 +1115,108 @@ iac_testing_module() {
 	echo "[-]      Infrastructure as Code Testing Module Complete" |tee -a reckon
 }
 
+# === NETWORK MONITORING MODULE ===
+network_monitor_module() {
+	echo -e "${GREEN}[!]${NC} ============ Network Monitoring Module ============" |tee -a reckon
+	
+	# Create pcap output directory
+	mkdir -p "$pcap_output_dir" 2> /dev/null
+	
+	# List available network interfaces
+	echo -e "${YELLOW}[?]${NC} Available Network Interfaces:" |tee -a reckon
+	local -i counter=1
+	local -a interfaces
+	
+	# Get all active interfaces
+	if command -v ifconfig &> /dev/null; then
+		interfaces=($(ifconfig -l 2>/dev/null | tr ' ' '\n'))
+	elif command -v ip &> /dev/null; then
+		interfaces=($(ip link show | grep "^[0-9]:" | awk -F': ' '{print $2}'))
+	else
+		echo -e "${RED}[ER]${NC} Neither ifconfig nor ip command found" |tee -a reckon
+		return 1
+	fi
+	
+	# Display available interfaces with details
+	for iface in "${interfaces[@]}"; do
+		if [[ "$iface" != "lo" && "$iface" != "lo0" ]]; then
+			if command -v ifconfig &> /dev/null; then
+				local ip=$(ifconfig "$iface" 2>/dev/null | grep "inet " | awk '{print $2}')
+			else
+				local ip=$(ip addr show "$iface" 2>/dev/null | grep "inet " | awk '{print $2}')
+			fi
+			echo -e "    ${BLUE}[$counter]${NC} $iface ${ip:+($ip)}"
+			counter=$((counter + 1))
+		fi
+	done
+	
+	# Let user select interface
+	echo ""
+	read -p "Select interface number (or enter custom interface name): " interface_choice
+	
+	# Validate and set interface
+	if [[ "$interface_choice" =~ ^[0-9]+$ ]]; then
+		selected_interface="${interfaces[$((interface_choice - 1))]}"
+	else
+		selected_interface="$interface_choice"
+	fi
+	
+	# Verify interface exists
+	if ! ip link show "$selected_interface" &> /dev/null && ! ifconfig "$selected_interface" &> /dev/null; then
+		echo -e "${RED}[ER]${NC} Invalid interface: $selected_interface" |tee -a reckon
+		return 1
+	fi
+	
+	echo -e "${GREEN}[✓]${NC} Selected interface: $selected_interface" |tee -a reckon
+	
+	# Ask for capture filter
+	echo ""
+	read -p "Enter tcpdump filter (empty for all traffic, examples: 'tcp port 80', 'udp port 53'): " filter_choice
+	if [[ -z "$filter_choice" ]]; then
+		filter_choice=""
+	fi
+	
+	# Generate output filename with timestamp
+	local timestamp=$(date +%Y%m%d_%H%M%S)
+	local pcap_file="$pcap_output_dir/capture_${selected_interface}_${timestamp}.pcap"
+	
+	echo ""
+	echo -e "${YELLOW}[*]${NC} Starting packet capture on $selected_interface" |tee -a reckon
+	echo -e "    Output file: $pcap_file" |tee -a reckon
+	echo -e "    Filter: ${filter_choice:-'all traffic'}" |tee -a reckon
+	echo -e "    ${BLUE}Press Ctrl+C to stop capture${NC}" |tee -a reckon
+	echo ""
+	
+	# Start tcpdump with elevated privileges if needed
+	if [[ $EUID -ne 0 ]]; then
+		echo -e "${YELLOW}[!]${NC} tcpdump requires elevated privileges. Using sudo..." |tee -a reckon
+		sudo tcpdump -i "$selected_interface" -w "$pcap_file" $filter_choice
+	else
+		tcpdump -i "$selected_interface" -w "$pcap_file" $filter_choice
+	fi
+	
+	# Show capture statistics
+	if [[ -f "$pcap_file" ]]; then
+		local packet_count=$(tcpdump -r "$pcap_file" 2>/dev/null | wc -l)
+		local file_size=$(du -h "$pcap_file" | cut -f1)
+		
+		echo ""
+		echo -e "${GREEN}[✓]${NC} Packet capture complete" |tee -a reckon
+		echo -e "    Packets captured: $packet_count" |tee -a reckon
+		echo -e "    File size: $file_size" |tee -a reckon
+		echo -e "    Location: $(pwd)/$pcap_file" |tee -a reckon
+		
+		# Ask if user wants to analyze the capture
+		echo ""
+		read -p "View packet summary? (y/n): " view_choice
+		if [[ "$view_choice" == "y" ]]; then
+			echo -e "\n${BLUE}[*]${NC} Packet Summary:" |tee -a reckon
+			tcpdump -r "$pcap_file" 2>/dev/null | head -20 |tee -a reckon
+			echo "    ... (showing first 20 packets, view full file with: tcpdump -r $pcap_file)" |tee -a reckon
+		fi
+	fi
+}
+
 mainfunction(){ # Runs enumeration functions for a single host $1 user arguement
 	workdir=$(pwd)
 	mkdir $workdir/$target 2> /dev/null
@@ -1224,9 +1336,9 @@ usage(){ # To be printed when user input is not valid
 		echo -e "All scan results will be stored in the current working directory"
 		echo -e ""
 		echo -e "[!] Example Usage: "
-		echo -e "[-] ./reckon.sh 192.168.1.100 "
-		echo -e "[-] ./reckon.sh scanme.nmap.org"
-		echo -e "[-] ./reckon.sh /home/malice/hostlist.txt "
+		echo -e "[-] ./wreckon.sh 192.168.1.100 "
+		echo -e "[-] ./wreckon.sh scanme.nmap.org"
+		echo -e "[-] ./wreckon.sh /home/malice/hostlist.txt "
 		echo -e ""
 		echo -e "[!] Configuration: Edit scan settings at the top of the script"
 		echo -e "[-] dns_enum - Enable DNS reconnaissance"
@@ -1240,6 +1352,9 @@ usage(){ # To be printed when user input is not valid
 		echo -e "[-] cloud_testing - AWS/Azure/GCP cloud platform testing (v2.2+)"
 		echo -e "[-] container_testing - Docker/Kubernetes container scanning (v2.3+)"
 		echo -e "[-] iac_testing - Terraform/CloudFormation/Helm IaC scanning (v2.4+)"
+		echo -e ""
+		echo -e "[!] Special Commands:"
+		echo -e "[-] ./wreckon.sh --monitor - Start interactive network packet capture"
 		echo ""
 }
 
@@ -1285,7 +1400,26 @@ validate(){ # Validates $1 user argument and determines single host, or host fil
 }
 
 splash
-validate $*
+
+# Check for special commands
+case "$1" in
+	--monitor|--network-monitor|-m)
+		echo ""
+		network_monitor_module
+		exit 0
+		;;
+	--help|-h)
+		usage
+		exit 0
+		;;
+	"")
+		usage
+		exit 1
+		;;
+	*)
+		validate $*
+		;;
+esac
 
 # === MODULE FRAMEWORK FOR FUTURE EXPANSION ===
 # API Testing Module (placeholder for future integration)
