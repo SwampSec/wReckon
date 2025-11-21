@@ -7,11 +7,11 @@ Is a simple wrapper script written in bash. It was written in preparation for th
 Reckon will run on any recent Kali Linux image and is currently wrapping tools and scripts such as: Nmap, Nmap-NSE, Curl, Enum4linux, Nikto, and Dirb. Reckon shouldn't have issue running on other Linux distros provided these tools are installed and are in the users $PATH.
 
 ### Example Usage
-``` ./reckon.sh 10.10.10.10 ```
+``` ./wreckon.sh 10.10.10.10 ```
 
-``` ./reckon.sh scanme.nmap.org```
+``` ./wreckon.sh scanme.nmap.org```
 
-``` ./reckon.sh /home/user/hostlist.txt```
+``` ./wreckon.sh /home/user/hostlist.txt```
 
 ### Workflow
 Reckon's work flow was designed to provide incremental results so you an progress through manual enumeration while waiting on results from longer scans such as Nikto, Dirb or some NSE Scripts. Again, the intent of this wrapper is to increase time efficiency by minimize wait/downtime. One could run a massive NMAP scan with all possible NSE scripts but you will likely be waiting 3 hours before you even know what ports are open which isn't very efficient.
