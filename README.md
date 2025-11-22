@@ -17,6 +17,124 @@ Reckon will run on any recent Kali Linux image and is currently wrapping tools a
 
 ``` ./wreckon.sh -m ``` (Short form for network monitor)
 
+``` ./wreckon.sh --config ``` (Interactive configuration - Metasploit style)
+
+``` ./wreckon.sh --show-options ``` (View all current settings)
+
+---
+
+## Interactive Configuration (Metasploit-style)
+
+wReckon now includes Metasploit-inspired configuration commands:
+
+```bash
+./wreckon.sh --config
+
+# In the interactive prompt, use SET commands:
+SET api_testing = true
+SET cloud_testing = false
+SET tports 500
+SET network_monitor true
+SET monitor_interface eth0
+SET pcap_filter tcp port 80
+
+# Type 'done' to exit and return to shell
+```
+
+**Available Options:**
+- `tports` - Number of top ports to scan (default: 100)
+- `tcp` / `udp` - Enable/disable TCP/UDP scanning (True/False)
+- `dns_enum` - DNS reconnaissance (True/False)
+- `ssl_scan` - SSL/TLS vulnerability scanning (True/False)
+- `owasp_scan` - OWASP Top 10 scanning (True/False)
+- `web_vuln_scan` - Web app vulnerability scanning (True/False)
+- `service_vuln_scan` - Service-specific testing (True/False)
+- `password_test` - Password policy testing (True/False)
+- `api_testing` - API testing module (True/False)
+- `cloud_testing` - Cloud platform testing (True/False)
+- `container_testing` - Container security scanning (True/False)
+- `iac_testing` - Infrastructure as Code scanning (True/False)
+- `network_monitor` - Network packet capture (True/False)
+- `monitor_interface` - Network interface to use (eth0, en0, tun0, etc.)
+- `pcap_filter` - tcpdump filter (tcp port 80, udp port 53, etc.)
+
+---
+
+## Network Monitoring + Scanning (How They Work Together)
+
+**Important:** Network monitoring is **SEPARATE** and **INDEPENDENT** from scanning.
+
+### How to Use Them Together:
+
+**Terminal 1 - Start Packet Capture:**
+```bash
+$ ./wreckon.sh --monitor
+
+[!] Available Network Interfaces:
+    [1] eth0 (192.168.1.100)
+    [2] tun0 (10.8.0.5)
+
+Select interface number: 1
+Enter tcpdump filter (leave blank for all): tcp port 80 and host 10.10.10.100
+
+[*] Starting packet capture on eth0
+[-] Output file: pcap_captures/capture_eth0_20251121_101530.pcap
+[*] Press Ctrl+C to stop capture
+# ... capturing packets ...
+```
+
+**Terminal 2 - Run Your Scan (While monitor is running):**
+```bash
+$ ./wreckon.sh 10.10.10.100
+
+[!] Testing directory created at: 10.10.10.100/
+[!] Running Quick Scan...
+[!] Performing DNS Reconnaissance...
+[!] Running SSL/TLS Vulnerability Scanning...
+# ... scanning continues while capture runs in Terminal 1 ...
+```
+
+**Result:**
+- Terminal 1: Packets saved to `pcap_captures/capture_eth0_20251121_101530.pcap`
+- Terminal 2: Scan results saved to `10.10.10.100/` directory
+- Both happen simultaneously!
+
+### Why Run Them Separately?
+
+✅ **Flexibility** - Monitor any interface while scanning any target  
+✅ **Evidence** - Preserve packet captures independently  
+✅ **Performance** - Each runs independently, no interference  
+✅ **Security** - Monitor encrypted or unencrypted traffic  
+✅ **Forensics** - Analyze PCAP files with Wireshark or tcpdump tools  
+
+### Full Pentesting Example:
+
+```bash
+# Terminal 1: Start capturing HTTP traffic to target
+./wreckon.sh --monitor
+# Select eth0, filter: tcp port 80 and host 10.10.10.100
+# Let it run (Ctrl+C to stop later)
+
+# Terminal 2: Run comprehensive scan
+./wreckon.sh --config
+# SET api_testing = true
+# SET ssl_scan = true
+# SET tports 500
+# done
+
+# Terminal 3: Actually start the target scan
+./wreckon.sh 10.10.10.100
+
+# Now you have:
+# - Terminal 1: Capturing all HTTP traffic
+# - Terminal 3: Running full vulnerability scan
+# Both happening at the same time!
+
+# When done, stop Terminal 1 with Ctrl+C
+# Analyze captured packets:
+tcpdump -r pcap_captures/capture_eth0_*.pcap
+```
+
 ### Workflow
 Reckon's work flow was designed to provide incremental results so you an progress through manual enumeration while waiting on results from longer scans such as Nikto, Dirb or some NSE Scripts. Again, the intent of this wrapper is to increase time efficiency by minimize wait/downtime. One could run a massive NMAP scan with all possible NSE scripts but you will likely be waiting 3 hours before you even know what ports are open which isn't very efficient.
 

@@ -58,6 +58,117 @@ NC='\033[0m'
 # For calculating run time
 SECONDS=0
 
+# === INTERACTIVE CONFIGURATION (Metasploit-style) ===
+show_options() {
+	echo -e "${BLUE}======= wReckon Configuration Options =======${NC}"
+	echo ""
+	echo -e "${GREEN}SCANNING OPTIONS:${NC}"
+	echo -e "  tports              => $tports               (Top N ports to scan)"
+	echo -e "  tcp                 => $tcp                 (Enable TCP scanning)"
+	echo -e "  udp                 => $udp                 (Enable UDP scanning)"
+	echo ""
+	echo -e "${GREEN}VULNERABILITY SCANNING:${NC}"
+	echo -e "  dns_enum            => $dns_enum             (DNS enumeration)"
+	echo -e "  ssl_scan            => $ssl_scan             (SSL/TLS scanning)"
+	echo -e "  owasp_scan          => $owasp_scan           (OWASP Top 10 scanning)"
+	echo -e "  web_vuln_scan       => $web_vuln_scan        (Web app vulnerability scanning)"
+	echo -e "  service_vuln_scan   => $service_vuln_scan    (Service vulnerability assessment)"
+	echo -e "  password_test       => $password_test        (Password policy testing)"
+	echo ""
+	echo -e "${GREEN}MODULE TOGGLES:${NC}"
+	echo -e "  api_testing         => $api_testing          (API testing module)"
+	echo -e "  cloud_testing       => $cloud_testing        (Cloud platform testing)"
+	echo -e "  container_testing   => $container_testing    (Container security scanning)"
+	echo -e "  iac_testing         => $iac_testing          (Infrastructure as Code scanning)"
+	echo ""
+	echo -e "${GREEN}NETWORK MONITORING:${NC}"
+	echo -e "  network_monitor     => $network_monitor      (Network packet capture)"
+	echo -e "  monitor_interface   => $monitor_interface    (Network interface to monitor)"
+	echo -e "  pcap_filter         => ${pcap_filter:-'(all traffic)'} (Capture filter)"
+	echo ""
+}
+
+interactive_config() {
+	while true; do
+		show_options
+		echo ""
+		read -p "SET option=value (or 'help', 'done'): " user_input
+		
+		if [[ "$user_input" == "help" ]]; then
+			echo ""
+			echo "SET command syntax:"
+			echo "  SET tports 500          - Change top ports to scan"
+			echo "  SET tcp True            - Enable TCP scanning"
+			echo "  SET api_testing True    - Enable API testing module"
+			echo "  SET network_monitor True - Enable network monitoring"
+			echo "  SET dns_enum False      - Disable DNS enumeration"
+			echo ""
+			continue
+		elif [[ "$user_input" == "done" ]]; then
+			break
+		fi
+		
+		# Parse SET command
+		if [[ "$user_input" =~ ^SET[[:space:]]+ ]] || [[ "$user_input" =~ ^set[[:space:]]+ ]]; then
+			user_input="${user_input#*[[:space:]]}"
+		fi
+		
+		if [[ -z "$user_input" ]]; then
+			continue
+		fi
+		
+		# Split on = or whitespace
+		IFS='=' read -r option value <<< "$user_input"
+		option=$(echo "$option" | xargs)  # Trim whitespace
+		value=$(echo "$value" | xargs)    # Trim whitespace
+		
+		# If no equals sign, try space-separated
+		if [[ -z "$value" ]]; then
+			IFS=' ' read -r option value <<< "$user_input"
+			option=$(echo "$option" | xargs)
+			value=$(echo "$value" | xargs)
+		fi
+		
+		if [[ -z "$option" ]] || [[ -z "$value" ]]; then
+			echo -e "${RED}[!] Invalid syntax${NC}"
+			continue
+		fi
+		
+		# Update configuration
+		case "$option" in
+			tports)
+				if [[ "$value" =~ ^[0-9]+$ ]]; then
+					tports=$value
+					echo -e "${GREEN}[✓]${NC} tports set to $tports"
+				else
+					echo -e "${RED}[!] Invalid value (must be number)${NC}"
+				fi
+				;;
+			tcp|udp|dns_enum|ssl_scan|owasp_scan|web_vuln_scan|password_test|service_vuln_scan|api_testing|cloud_testing|container_testing|iac_testing|network_monitor)
+				if [[ "$value" =~ ^(True|true|False|false|1|0)$ ]]; then
+					# Normalize to True/False
+					[[ "$value" =~ ^(True|true|1)$ ]] && value="True" || value="False"
+					eval "${option}=${value}"
+					echo -e "${GREEN}[✓]${NC} $option set to $value"
+				else
+					echo -e "${RED}[!] Invalid value (use True or False)${NC}"
+				fi
+				;;
+			monitor_interface)
+				monitor_interface=$value
+				echo -e "${GREEN}[✓]${NC} monitor_interface set to $monitor_interface"
+				;;
+			pcap_filter)
+				pcap_filter=$value
+				echo -e "${GREEN}[✓]${NC} pcap_filter set to '$pcap_filter'"
+				;;
+			*)
+				echo -e "${RED}[!] Unknown option: $option${NC}"
+				;;
+		esac
+	done
+}
+
 # === TOOL AVAILABILITY CHECK ===
 declare -A tool_available
 check_tools_availability() {
@@ -1335,26 +1446,36 @@ splash(){ # Banner just because
 usage(){ # To be printed when user input is not valid
 		echo -e "All scan results will be stored in the current working directory"
 		echo -e ""
-		echo -e "[!] Example Usage: "
-		echo -e "[-] ./wreckon.sh 192.168.1.100 "
-		echo -e "[-] ./wreckon.sh scanme.nmap.org"
-		echo -e "[-] ./wreckon.sh /home/malice/hostlist.txt "
+		echo -e "${BLUE}[!] BASIC USAGE:${NC}"
+		echo -e "[-] ./wreckon.sh 192.168.1.100           # Scan single host"
+		echo -e "[-] ./wreckon.sh scanme.nmap.org         # Scan by domain"
+		echo -e "[-] ./wreckon.sh /home/user/hostlist.txt # Scan multiple hosts"
 		echo -e ""
-		echo -e "[!] Configuration: Edit scan settings at the top of the script"
-		echo -e "[-] dns_enum - Enable DNS reconnaissance"
-		echo -e "[-] ssl_scan - Enable SSL/TLS vulnerability scanning"
-		echo -e "[-] owasp_scan - Enable OWASP Top 10 scanning"
-		echo -e "[-] web_vuln_scan - Enable web app vulnerability scanning"
-		echo -e "[-] service_vuln_scan - Enable service vulnerability assessment"
+		echo -e "${BLUE}[!] NETWORK MONITORING (SEPARATE from scanning):${NC}"
+		echo -e "[-] ./wreckon.sh --monitor       # Start packet capture (interactive)"
+		echo -e "[-] ./wreckon.sh -m              # Short form"
 		echo -e ""
-		echo -e "[!] Optional Modules (set to True to enable):"
-		echo -e "[-] api_testing - REST/GraphQL/SOAP API scanning (v2.1+)"
-		echo -e "[-] cloud_testing - AWS/Azure/GCP cloud platform testing (v2.2+)"
-		echo -e "[-] container_testing - Docker/Kubernetes container scanning (v2.3+)"
-		echo -e "[-] iac_testing - Terraform/CloudFormation/Helm IaC scanning (v2.4+)"
+		echo -e "${YELLOW}NOTE: Network monitoring runs INDEPENDENTLY of scanning${NC}"
+		echo -e "      Run ./wreckon.sh --monitor in ONE terminal"
+		echo -e "      Run ./wreckon.sh 10.10.10.10 in ANOTHER terminal"
+		echo -e "      Both capture and scan happen simultaneously"
 		echo -e ""
-		echo -e "[!] Special Commands:"
-		echo -e "[-] ./wreckon.sh --monitor - Start interactive network packet capture"
+		echo -e "${BLUE}[!] INTERACTIVE CONFIGURATION (Metasploit-style):${NC}"
+		echo -e "[-] ./wreckon.sh --config        # Enter interactive config mode"
+		echo -e "[-] ./wreckon.sh --show-options  # Show all options without scanning"
+		echo -e ""
+		echo -e "${YELLOW}Configuration Commands:${NC}"
+		echo -e "    SET api_testing = true              # Enable API testing"
+		echo -e "    SET cloud_testing = false           # Disable cloud testing"
+		echo -e "    SET tports 500                      # Scan top 500 ports"
+		echo -e "    SET network_monitor true            # Enable packet capture during scan"
+		echo -e "    SET monitor_interface eth0          # Change interface"
+		echo -e "    SET pcap_filter 'tcp port 80'       # Set capture filter"
+		echo -e ""
+		echo -e "${BLUE}[!] Configuration File Editing:${NC}"
+		echo -e "[-] Edit the top of wreckon.sh directly to change defaults:"
+		echo -e "    dns_enum, ssl_scan, owasp_scan, web_vuln_scan, service_vuln_scan"
+		echo -e "    api_testing, cloud_testing, container_testing, iac_testing"
 		echo ""
 }
 
@@ -1406,6 +1527,16 @@ case "$1" in
 	--monitor|--network-monitor|-m)
 		echo ""
 		network_monitor_module
+		exit 0
+		;;
+	--config|-c)
+		echo ""
+		interactive_config
+		exit 0
+		;;
+	--show-options|-o)
+		echo ""
+		show_options
 		exit 0
 		;;
 	--help|-h)
