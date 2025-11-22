@@ -48,6 +48,13 @@ pcap_filter=""
 # Output directory for pcap files
 pcap_output_dir="pcap_captures"
 
+# === HOSTS FILE MANAGEMENT ===
+# Auto-add target to /etc/hosts (True/False)
+auto_hosts=False
+# Backup original hosts file
+hosts_file="/etc/hosts"
+hosts_backup="/etc/hosts.wreckon.bak"
+
 # Color Variables
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -85,6 +92,9 @@ show_options() {
 	echo -e "  network_monitor     => $network_monitor      (Network packet capture)"
 	echo -e "  monitor_interface   => $monitor_interface    (Network interface to monitor)"
 	echo -e "  pcap_filter         => ${pcap_filter:-'(all traffic)'} (Capture filter)"
+	echo ""
+	echo -e "${GREEN}HOSTS FILE MANAGEMENT:${NC}"
+	echo -e "  auto_hosts          => $auto_hosts           (Auto-add target to /etc/hosts)"
 	echo ""
 }
 
@@ -144,7 +154,7 @@ interactive_config() {
 					echo -e "${RED}[!] Invalid value (must be number)${NC}"
 				fi
 				;;
-			tcp|udp|dns_enum|ssl_scan|owasp_scan|web_vuln_scan|password_test|service_vuln_scan|api_testing|cloud_testing|container_testing|iac_testing|network_monitor)
+			tcp|udp|dns_enum|ssl_scan|owasp_scan|web_vuln_scan|password_test|service_vuln_scan|api_testing|cloud_testing|container_testing|iac_testing|network_monitor|auto_hosts)
 				if [[ "$value" =~ ^(True|true|False|false|1|0)$ ]]; then
 					# Normalize to True/False
 					[[ "$value" =~ ^(True|true|1)$ ]] && value="True" || value="False"
@@ -190,6 +200,63 @@ check_tools_availability() {
 	command -v "ffuf" &> /dev/null && tool_available["ffuf"]=true || tool_available["ffuf"]=false
 }
 
+# === HOSTS FILE MANAGEMENT ===
+manage_hosts_entry() {
+	local ip=$1
+	local hostname=$2
+	
+	if [[ "$auto_hosts" != "True" ]]; then
+		return
+	fi
+	
+	if [[ -z "$ip" ]] || [[ -z "$hostname" ]]; then
+		return
+	fi
+	
+	echo -e "${GREEN}[!]${NC} Managing hosts file entry for $hostname" |tee -a reckon
+	
+	# Check if running as root
+	if [[ $EUID -ne 0 ]]; then
+		echo -e "${YELLOW}[!]${NC} Hosts file management requires sudo" |tee -a reckon
+		echo "[-]      Run: sudo -s" |tee -a reckon
+		return
+	fi
+	
+	# Create backup if it doesn't exist
+	if [[ ! -f "$hosts_backup" ]]; then
+		cp "$hosts_file" "$hosts_backup"
+		echo "[-]      Backed up original hosts file to $hosts_backup" |tee -a reckon
+	fi
+	
+	# Check if entry already exists
+	if grep -q "^${ip}[[:space:]].*${hostname}" "$hosts_file"; then
+		echo -e "${GREEN}[✓]${NC} Entry already exists in hosts file" |tee -a reckon
+		return
+	fi
+	
+	# Add entry to hosts file
+	echo "$ip    $hostname" >> "$hosts_file"
+	echo -e "${GREEN}[✓]${NC} Added to hosts file: $ip $hostname" |tee -a reckon
+}
+
+# Remove hosts entries after scan (cleanup)
+cleanup_hosts_entry() {
+	if [[ "$auto_hosts" != "True" ]]; then
+		return
+	fi
+	
+	if [[ $EUID -ne 0 ]]; then
+		return
+	fi
+	
+	# Restore from backup
+	if [[ -f "$hosts_backup" ]]; then
+		echo -e "${BLUE}[*]${NC} Cleaning up hosts file entries" |tee -a reckon
+		# Restore will be manual - just notify user
+		echo "[-]      To restore original: sudo cp $hosts_backup $hosts_file" |tee -a reckon
+	fi
+}
+
 # === DNS & DISCOVERY FUNCTIONS ===
 dns_recon() {
 	if [[ "${tool_available[dig]}" == false ]]; then
@@ -204,6 +271,13 @@ dns_recon() {
 	
 	# Reverse DNS lookup
 	dig -x $target +short > dns-reverse-lookup 2>/dev/null
+	
+	# Extract hostname for hosts file management
+	local resolved_hostname=$(cat dns-reverse-lookup | grep -o '^[^ ]*' | sed 's/\.$//' | head -1)
+	if [[ -z "$resolved_hostname" ]]; then
+		resolved_hostname="$target"
+	fi
+	manage_hosts_entry "$target" "$resolved_hostname"
 	
 	# Zone transfer attempt
 	dig @$target axfr $target > dns-axfr 2>/dev/null
