@@ -200,6 +200,20 @@ check_tools_availability() {
 	command -v "ffuf" &> /dev/null && tool_available["ffuf"]=true || tool_available["ffuf"]=false
 }
 
+# === PORT RESPONSIVENESS CHECKING ===
+check_port_responsive() {
+	local target_host=$1
+	local port=$2
+	local timeout=${3:-2}  # 2 second default timeout
+	
+	# Quick TCP connection test using nc (netcat)
+	if nc -z -w $timeout "$target_host" "$port" 2>/dev/null; then
+		return 0  # Port is responsive
+	else
+		return 1  # Port is not responsive
+	fi
+}
+
 # === HOSTS FILE MANAGEMENT ===
 manage_hosts_entry() {
 	local ip=$1
@@ -520,6 +534,12 @@ web_app_vuln_scan() { # Comprehensive web application vulnerability scanning
 			web_url="http://$target:$wport"
 		fi
 		
+		# Check if port is responsive before scanning
+		if ! check_port_responsive "$target" "$wport" 3; then
+			echo "[-]      Port $wport is unresponsive, skipping OWASP scan" |tee -a reckon
+			continue
+		fi
+		
 		# OWASP Top 10 checks via NSE
 		echo "[-]      Running OWASP Top 10 checks on $web_url" |tee -a reckon
 		nmap --script http-vuln*,http-csrf*,http-slowloris* -p $wport $target -oN $wport-owasp 2>/dev/null 1>/dev/null
@@ -558,6 +578,12 @@ pathtraversal_scan() { # Test for path traversal vulnerabilities
 			web_url="http://$target:$wport"
 		fi
 		
+		# Check if port is responsive before scanning
+		if ! check_port_responsive "$target" "$wport" 3; then
+			echo "[-]      Port $wport is unresponsive, skipping path traversal scan" |tee -a reckon
+			continue
+		fi
+		
 		# Simple path traversal tests
 		for path in "etc/passwd" "..%2fwindows%2fsystem32" "....//....//....//etc/passwd"; do
 			response=$(curl -s "$web_url/$path" 2>/dev/null | head -c 200)
@@ -576,6 +602,12 @@ information_disclosure_scan() { # Check for information disclosure
 			web_url="https://$target"
 		else
 			web_url="http://$target:$wport"
+		fi
+		
+		# Check if port is responsive before scanning
+		if ! check_port_responsive "$target" "$wport" 3; then
+			echo "[-]      Port $wport is unresponsive, skipping information disclosure scan" |tee -a reckon
+			continue
 		fi
 		
 		nmap --script http-methods,http-server-header,http-xssed,http-git,http-svn-enum -p $wport $target -oN $wport-info-disclosure 2>/dev/null 1>/dev/null
