@@ -32,6 +32,14 @@ path_discovery=True
 # Enable subdomain enumeration
 subdomain_enum=True
 
+# === REPORTING OPTIONS ===
+# Export report as CSV
+export_csv=True
+# Export report as DOCX (requires python-docx)
+export_docx=True
+# Export report as JSON
+export_json=True
+
 # === MODULE TOGGLES (Future Expansion) ===
 # Enable API testing module (REST/GraphQL/SOAP)
 api_testing=False
@@ -102,6 +110,11 @@ show_options() {
 	echo -e "${GREEN}HOSTS FILE MANAGEMENT:${NC}"
 	echo -e "  auto_hosts          => $auto_hosts           (Auto-add target to /etc/hosts)"
 	echo ""
+	echo -e "${GREEN}REPORT EXPORT:${NC}"
+	echo -e "  export_csv          => $export_csv           (Export CSV format)"
+	echo -e "  export_docx         => $export_docx          (Export DOCX format)"
+	echo -e "  export_json         => $export_json          (Export JSON format)"
+	echo ""
 }
 
 interactive_config() {
@@ -160,7 +173,7 @@ interactive_config() {
 					echo -e "${RED}[!] Invalid value (must be number)${NC}"
 				fi
 				;;
-			tcp|udp|dns_enum|ssl_scan|owasp_scan|web_vuln_scan|password_test|service_vuln_scan|path_discovery|subdomain_enum|api_testing|cloud_testing|container_testing|iac_testing|network_monitor|auto_hosts)
+			tcp|udp|dns_enum|ssl_scan|owasp_scan|web_vuln_scan|password_test|service_vuln_scan|path_discovery|subdomain_enum|api_testing|cloud_testing|container_testing|iac_testing|network_monitor|auto_hosts|export_csv|export_docx|export_json)
 				if [[ "$value" =~ ^(True|true|False|false|1|0)$ ]]; then
 					# Normalize to True/False
 					[[ "$value" =~ ^(True|true|1)$ ]] && value="True" || value="False"
@@ -1064,10 +1077,168 @@ waitforscans(){ # Holds the terminal open until all Nikto scans have completed
 	fi
 }
 
+# === REPORT EXPORT FUNCTIONS ===
+export_to_csv() {
+	local csv_file="$1"
+	local timestamp="$2"
+	
+	{
+		echo "Finding,Severity,Port,Service,Details,Remediation"
+		
+		# Critical findings
+		grep -r "VULNERABLE\|critical\|Critical\|CRITICAL" . 2>/dev/null | grep -v ".git" | while read -r line; do
+			local finding=$(echo "$line" | cut -d':' -f2- | head -c 100)
+			local port=$(echo "$line" | grep -oE '[0-9]+/(tcp|udp)' | head -1)
+			echo "\"${finding}\",\"CRITICAL\",\"${port:-N/A}\",\"\",\"${finding}\",\"Review and remediate immediately\""
+		done
+		
+		# High risk findings from OWASP
+		cat *-owasp 2>/dev/null | grep "|" | while read -r line; do
+			local severity=$(echo "$line" | grep -oE "WARN|INFO|VULN" | head -1)
+			local finding=$(echo "$line" | cut -c 3- | head -c 100)
+			echo "\"${finding}\",\"HIGH\",\"80\",\"HTTP\",\"${finding}\",\"Review OWASP recommendations\""
+		done
+		
+		# Service vulnerabilities
+		cat *-version 2>/dev/null | grep "vulnerable\|exploit" -i | while read -r line; do
+			local finding=$(echo "$line" | head -c 100)
+			local port=$(echo "$line" | grep -oE '[0-9]+' | head -1)
+			echo "\"${finding}\",\"MEDIUM\",\"${port:-N/A}\",\"Service\",\"${finding}\",\"Update service to latest version\""
+		done
+	} > "$csv_file"
+}
+
+export_to_json() {
+	local json_file="$1"
+	local timestamp="$2"
+	
+	{
+		echo "{"
+		echo "  \"report_metadata\": {"
+		echo "    \"target\": \"$target\","
+		echo "    \"scan_date\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+		echo "    \"report_generated\": \"$(date)\""
+		echo "  },"
+		echo "  \"findings\": ["
+		
+		local first=true
+		
+		# Critical findings
+		grep -r "VULNERABLE\|critical\|Critical\|CRITICAL" . 2>/dev/null | grep -v ".git" | while read -r line; do
+			if [[ "$first" == false ]]; then echo ","; fi
+			first=false
+			local finding=$(echo "$line" | cut -d':' -f2- | head -c 200 | sed 's/"/\\"/g')
+			local port=$(echo "$line" | grep -oE '[0-9]+/(tcp|udp)' | head -1)
+			echo "    {"
+			echo "      \"severity\": \"CRITICAL\","
+			echo "      \"finding\": \"${finding}\","
+			echo "      \"port\": \"${port:-N/A}\","
+			echo "      \"type\": \"vulnerability\""
+			echo "    }"
+		done
+		
+		# High risk findings
+		cat *-owasp 2>/dev/null | grep "|" | head -10 | while read -r line; do
+			if [[ "$first" == false ]]; then echo ","; fi
+			first=false
+			local finding=$(echo "$line" | cut -c 3- | head -c 200 | sed 's/"/\\"/g')
+			echo "    {"
+			echo "      \"severity\": \"HIGH\","
+			echo "      \"finding\": \"${finding}\","
+			echo "      \"port\": \"80\","
+			echo "      \"type\": \"web_vulnerability\""
+			echo "    }"
+		done
+		
+		echo "  ],"
+		echo "  \"summary\": {"
+		echo "    \"total_ports_open\": $(cat .openports 2>/dev/null | wc -l),"
+		echo "    \"total_services\": $(cat *-version 2>/dev/null | grep open | wc -l),"
+		echo "    \"vulnerabilities_found\": $(grep -r \"VULNERABLE\" . 2>/dev/null | wc -l)"
+		echo "  }"
+		echo "}"
+	} > "$json_file"
+}
+
+export_to_docx() {
+	local docx_file="$1"
+	local timestamp="$2"
+	
+	# Python script to generate DOCX using python-docx
+	python3 << 'EOF'
+try:
+    from docx import Document
+    from docx.shared import Inches, Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    import os
+    import glob
+    
+    doc = Document()
+    
+    # Title
+    title = doc.add_heading('Vulnerability Assessment Report', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Metadata
+    doc.add_heading('Report Information', level=1)
+    doc.add_paragraph(f'Target: {os.environ.get("target", "N/A")}')
+    doc.add_paragraph(f'Scan Date: {os.environ.get("scan_date", "N/A")}')
+    doc.add_paragraph(f'Report Generated: {os.popen("date").read().strip()}')
+    
+    # Critical Findings
+    doc.add_heading('Critical Findings', level=1)
+    critical_found = False
+    for item in os.popen("grep -r \"VULNERABLE|critical\" . 2>/dev/null | grep -v .git | head -10").read().strip().split("\n"):
+        if item:
+            doc.add_paragraph(item, style='List Bullet')
+            critical_found = True
+    if not critical_found:
+        doc.add_paragraph('No critical findings detected.', style='List Bullet')
+    
+    # High Risk Findings
+    doc.add_heading('High Risk Findings', level=1)
+    for item in os.popen("cat *-owasp 2>/dev/null | grep '|' | head -10").read().strip().split("\n"):
+        if item:
+            doc.add_paragraph(item.strip()[3:] if item.startswith('|-') else item, style='List Bullet')
+    
+    # Statistics
+    doc.add_heading('Scan Statistics', level=1)
+    stats_table = doc.add_table(rows=5, cols=2)
+    stats_table.style = 'Light Grid Accent 1'
+    
+    # Add stats data
+    hdr_cells = stats_table.rows[0].cells
+    hdr_cells[0].text = 'Metric'
+    hdr_cells[1].text = 'Count'
+    
+    stats_data = [
+        ('Total Open TCP Ports', str(len(open('.openports', 'r').read().split('\n')) if os.path.exists('.openports') else 0)),
+        ('Services Identified', str(os.popen("cat *-version 2>/dev/null | grep open | wc -l").read().strip())),
+        ('Vulnerabilities Found', str(os.popen("grep -r 'VULNERABLE' . 2>/dev/null | wc -l").read().strip()))
+    ]
+    
+    for i, (metric, count) in enumerate(stats_data, 1):
+        row_cells = stats_table.rows[i].cells
+        row_cells[0].text = metric
+        row_cells[1].text = count
+    
+    # Save document
+    doc.save(os.environ.get('DOCX_FILE', 'report.docx'))
+    print(f"DOCX report saved successfully")
+    
+except Exception as e:
+    print(f"DOCX export error: {e}")
+EOF
+}
+
 generate_vulnerability_report() { # Consolidate findings into a report
 	echo -e "${GREEN}[!]${NC} Generating Vulnerability Assessment Report" |tee -a reckon
 	
-	report_file="VULNERABILITY_REPORT_$(date +%s).txt"
+	timestamp=$(date +%s)
+	report_file="VULNERABILITY_REPORT_${timestamp}.txt"
+	csv_file="VULNERABILITY_REPORT_${timestamp}.csv"
+	json_file="VULNERABILITY_REPORT_${timestamp}.json"
+	docx_file="VULNERABILITY_REPORT_${timestamp}.docx"
 	
 	echo "========================================" > $report_file
 	echo "  VULNERABILITY ASSESSMENT REPORT" >> $report_file
@@ -1132,6 +1303,30 @@ generate_vulnerability_report() { # Consolidate findings into a report
 	echo "" >> $report_file
 	
 	echo -e "${GREEN}[!]${NC} Report saved to: $report_file" |tee -a reckon
+	
+	# Export to CSV format if enabled
+	if [[ "$export_csv" == "True" ]]; then
+		echo -e "${GREEN}[*]${NC} Exporting to CSV format..." |tee -a reckon
+		export_to_csv "$csv_file" "$timestamp"
+		echo -e "${GREEN}[✓]${NC} CSV report saved to: $csv_file" |tee -a reckon
+	fi
+	
+	# Export to JSON format if enabled
+	if [[ "$export_json" == "True" ]]; then
+		echo -e "${GREEN}[*]${NC} Exporting to JSON format..." |tee -a reckon
+		export_to_json "$json_file" "$timestamp"
+		echo -e "${GREEN}[✓]${NC} JSON report saved to: $json_file" |tee -a reckon
+	fi
+	
+	# Export to DOCX format if enabled
+	if [[ "$export_docx" == "True" ]]; then
+		echo -e "${GREEN}[*]${NC} Exporting to DOCX format..." |tee -a reckon
+		export DOCX_FILE="$docx_file"
+		export target="$target"
+		export scan_date="$(date)"
+		export_to_docx "$docx_file" "$timestamp"
+		echo -e "${GREEN}[✓]${NC} DOCX report saved to: $docx_file" |tee -a reckon
+	fi
 }
 
 enumerate_users() { # Attempt user enumeration on identified services

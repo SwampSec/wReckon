@@ -58,9 +58,9 @@ apt-get install -y -qq sqlmap 2>/dev/null || true
 echo -e "${YELLOW}[*]${NC} Installing SSL/TLS testing tools..."
 apt-get install -y -qq openssl 2>/dev/null || true
 
-# Optional: testssl.sh
+# testssl.sh (REQUIRED)
+echo -e "${YELLOW}[*]${NC} Installing testssl.sh (required)..."
 if ! command -v testssl.sh &> /dev/null; then
-    echo -e "${YELLOW}[*]${NC} Installing testssl.sh..."
     cd /opt 2>/dev/null || mkdir -p /opt
     git clone --depth 1 https://github.com/drwetter/testssl.sh.git 2>/dev/null || true
     ln -sf /opt/testssl.sh/testssl.sh /usr/local/bin/testssl.sh 2>/dev/null || true
@@ -70,6 +70,7 @@ fi
 # Python tools
 echo -e "${YELLOW}[*]${NC} Installing Python-based tools..."
 apt-get install -y -qq python3 python3-pip 2>/dev/null || true
+pip3 install -q python-docx 2>/dev/null || true
 
 # Nuclei (if Go is available)
 if command -v go &> /dev/null; then
