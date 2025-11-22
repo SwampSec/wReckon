@@ -60,6 +60,12 @@ pcap_filter=""
 # Output directory for pcap files
 pcap_output_dir="pcap_captures"
 
+# === DEBUGGING ===
+# Enable debug logging for hang diagnostics (True/False)
+debug=False
+# Debug log file
+debug_log="wreckon_debug.log"
+
 # === HOSTS FILE MANAGEMENT ===
 # Auto-add target to /etc/hosts (True/False)
 auto_hosts=False
@@ -109,6 +115,9 @@ show_options() {
 	echo ""
 	echo -e "${GREEN}HOSTS FILE MANAGEMENT:${NC}"
 	echo -e "  auto_hosts          => $auto_hosts           (Auto-add target to /etc/hosts)"
+	echo ""
+	echo -e "${GREEN}DEBUGGING:${NC}"
+	echo -e "  debug               => $debug               (Enable debug logging)"
 	echo ""
 	echo -e "${GREEN}REPORT EXPORT:${NC}"
 	echo -e "  export_csv          => $export_csv           (Export CSV format)"
@@ -173,7 +182,7 @@ interactive_config() {
 					echo -e "${RED}[!] Invalid value (must be number)${NC}"
 				fi
 				;;
-			tcp|udp|dns_enum|ssl_scan|owasp_scan|web_vuln_scan|password_test|service_vuln_scan|path_discovery|subdomain_enum|api_testing|cloud_testing|container_testing|iac_testing|network_monitor|auto_hosts|export_csv|export_docx|export_json)
+			tcp|udp|dns_enum|ssl_scan|owasp_scan|web_vuln_scan|password_test|service_vuln_scan|path_discovery|subdomain_enum|api_testing|cloud_testing|container_testing|iac_testing|network_monitor|auto_hosts|debug|export_csv|export_docx|export_json)
 				if [[ "$value" =~ ^(True|true|False|false|1|0)$ ]]; then
 					# Normalize to True/False
 					[[ "$value" =~ ^(True|true|1)$ ]] && value="True" || value="False"
@@ -567,7 +576,21 @@ web_app_vuln_scan() { # Comprehensive web application vulnerability scanning
 		# OWASP Top 10 checks via NSE
 		echo "[-]      Running OWASP Top 10 checks on $web_url" |tee -a reckon
 		echo "[-]        [*] Scanning: http-vuln*, http-csrf*, http-slowloris* scripts..." |tee -a reckon
-		nmap --script http-vuln*,http-csrf*,http-slowloris* -p $wport $target -oN $wport-owasp 2>&1 | grep -E 'Starting|Completed|Progress' |tee -a reckon
+		debug_log_msg "Starting OWASP scan on port $wport for $target"
+		debug_log_msg "Command: nmap --script http-vuln*,http-csrf*,http-slowloris* -p $wport $target -oN $wport-owasp" "DEBUG"
+		
+		# Run nmap with timeout to prevent hanging
+		timeout 180 nmap --script http-vuln*,http-csrf*,http-slowloris* -p $wport $target -oN $wport-owasp 2>&1 | grep -E 'Starting|Completed|Progress' |tee -a reckon
+		local nmap_exit=$?
+		
+		if [[ $nmap_exit -eq 124 ]]; then
+			debug_log_msg "OWASP scan TIMEOUT on port $wport (180 seconds exceeded)" "WARN"
+			echo -e "${RED}[!]${NC}        [!] OWASP scan timeout on port $wport (possible hang detected)" |tee -a reckon
+		elif [[ $nmap_exit -eq 0 ]]; then
+			debug_log_msg "OWASP scan completed successfully on port $wport" "INFO"
+		else
+			debug_log_msg "OWASP scan exited with code $nmap_exit on port $wport" "ERROR"
+		fi
 		
 		findings=$(cat $wport-owasp |grep "|" |wc -l)
 		if [[ "$findings" -gt "0" ]]; then
@@ -584,7 +607,18 @@ web_app_vuln_scan() { # Comprehensive web application vulnerability scanning
 		# Additional checks
 		echo "[-]      Checking for common vulnerabilities:" |tee -a reckon
 		echo "[-]        [*] Scanning: http-open-proxy, http-trace, http-auth-finder, http-sitemap-generator..." |tee -a reckon
-		nmap --script http-open-proxy,http-trace,http-auth-finder,http-sitemap-generator -p $wport $target -oN $wport-common-vuln 2>&1 | grep -E 'Starting|Completed|Progress' |tee -a reckon
+		debug_log_msg "Starting common vulnerability scan on port $wport for $target"
+		
+		# Run nmap with timeout to prevent hanging
+		timeout 180 nmap --script http-open-proxy,http-trace,http-auth-finder,http-sitemap-generator -p $wport $target -oN $wport-common-vuln 2>&1 | grep -E 'Starting|Completed|Progress' |tee -a reckon
+		local nmap_exit=$?
+		
+		if [[ $nmap_exit -eq 124 ]]; then
+			debug_log_msg "Common vuln scan TIMEOUT on port $wport (180 seconds exceeded)" "WARN"
+			echo -e "${RED}[!]${NC}        [!] Common scan timeout on port $wport" |tee -a reckon
+		elif [[ $nmap_exit -ne 0 ]]; then
+			debug_log_msg "Common vuln scan exited with code $nmap_exit on port $wport" "ERROR"
+		fi
 		
 		findings=$(cat $wport-common-vuln |grep "|" |wc -l)
 		if [[ "$findings" -gt "0" ]]; then
@@ -814,13 +848,40 @@ niktohttp(){ # Runs default Nikto scan
 	if [[ "$wports" -gt "0" ]];then
 		echo -e "${GREEN}[!]${NC}    Nikto queued for http ports." |tee -a reckon
 		for nikports in $(cat .openports |grep -i http |grep -v "Microsoft Windows RPC over HTTP" |awk '{print$1}' |awk -F "/" '{print$1}' |sort -g); do
-		
+			debug_log_msg "Starting Nikto scan on port $nikports for $target"
+			
 			if [[ "$wports" == "443" ]]; then
-				nikto -h https://$target  2> /dev/null 1> $nikports-nikto
-				echo -e "${GREEN}[!]${NC} The Nikto scan for https://$target has completed." "\a" |tee -a reckon
+				debug_log_msg "Running: timeout 300 nikto -h https://$target -T 5" "DEBUG"
+				timeout 300 nikto -h https://$target -T 5 2>&1 | tee -a $nikports-nikto.tmp
+				local nikto_exit=$?
+				cat $nikports-nikto.tmp > $nikports-nikto
+				rm -f $nikports-nikto.tmp
+				
+				if [[ $nikto_exit -eq 124 ]]; then
+					debug_log_msg "Nikto TIMEOUT on https://$target (300 seconds exceeded)" "WARN"
+					echo -e "${RED}[!]${NC} Nikto scan TIMEOUT for https://$target (possible hang)" |tee -a reckon
+				elif [[ $nikto_exit -eq 0 ]]; then
+					echo -e "${GREEN}[!]${NC} The Nikto scan for https://$target has completed." "\a" |tee -a reckon
+					debug_log_msg "Nikto scan completed for https://$target"
+				else
+					debug_log_msg "Nikto exited with code $nikto_exit for https://$target" "ERROR"
+				fi
 			else
-				nikto -h http://$target:$nikports 2> /dev/null 1> $nikports-nikto
-				echo -e "${GREEN}[!]${NC} The Nikto scan for http://$target:$nikports has completed." "\a" |tee -a reckon
+				debug_log_msg "Running: timeout 300 nikto -h http://$target:$nikports -T 5" "DEBUG"
+				timeout 300 nikto -h http://$target:$nikports -T 5 2>&1 | tee -a $nikports-nikto.tmp
+				local nikto_exit=$?
+				cat $nikports-nikto.tmp > $nikports-nikto
+				rm -f $nikports-nikto.tmp
+				
+				if [[ $nikto_exit -eq 124 ]]; then
+					debug_log_msg "Nikto TIMEOUT on http://$target:$nikports (300 seconds exceeded)" "WARN"
+					echo -e "${RED}[!]${NC} Nikto scan TIMEOUT for http://$target:$nikports (possible hang)" |tee -a reckon
+				elif [[ $nikto_exit -eq 0 ]]; then
+					echo -e "${GREEN}[!]${NC} The Nikto scan for http://$target:$nikports has completed." "\a" |tee -a reckon
+					debug_log_msg "Nikto scan completed for http://$target:$nikports"
+				else
+					debug_log_msg "Nikto exited with code $nikto_exit for http://$target:$nikports" "ERROR"
+				fi
 			fi
 
 			IFS=$'\n';
@@ -1074,6 +1135,17 @@ waitforscans(){ # Holds the terminal open until all Nikto scans have completed
 			sleep 1
 			scansrunning=$(ps -aux |grep $target |grep -v grep |grep -v reckon |wc -l)	
 		done 
+	fi
+}
+
+# === DEBUG LOGGING FUNCTION ===
+debug_log_msg() {
+	local msg="$1"
+	local level="${2:-INFO}"
+	if [[ "$debug" == "True" ]]; then
+		local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+		echo "[$timestamp] [$level] $msg" >> "$debug_log"
+		echo -e "${BLUE}[DEBUG]${NC} $msg"
 	fi
 }
 
