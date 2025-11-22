@@ -87,9 +87,11 @@ SECONDS=0
 # Store PID for process management
 SCRIPT_PID=$$
 BACKGROUND_PIDS=()
+INTERRUPTED=0
 
 # Trap signals for graceful cleanup
-cleanup_on_exit() {
+cleanup_on_interrupt() {
+	INTERRUPTED=1
 	local exit_code=$?
 	
 	echo -e "\n${YELLOW}[*]${NC} Received interrupt signal, cleaning up..." |tee -a reckon 2>/dev/null
@@ -124,8 +126,16 @@ cleanup_on_exit() {
 	exit $exit_code
 }
 
-# Set up signal traps
-trap cleanup_on_exit SIGINT SIGTERM EXIT
+# Only cleanup on actual interrupts, not normal exit
+cleanup_on_exit() {
+	if [[ $INTERRUPTED -eq 0 ]]; then
+		return 0
+	fi
+}
+
+# Set up signal traps - only interrupt signals trigger cleanup
+trap cleanup_on_interrupt SIGINT SIGTERM
+trap cleanup_on_exit EXIT
 
 # === INTERACTIVE CONFIGURATION (Metasploit-style) ===
 show_options() {
