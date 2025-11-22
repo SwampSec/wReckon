@@ -83,6 +83,50 @@ NC='\033[0m'
 # For calculating run time
 SECONDS=0
 
+# === SIGNAL HANDLING & CLEANUP ===
+# Store PID for process management
+SCRIPT_PID=$$
+BACKGROUND_PIDS=()
+
+# Trap signals for graceful cleanup
+cleanup_on_exit() {
+	local exit_code=$?
+	
+	echo -e "\n${YELLOW}[*]${NC} Received interrupt signal, cleaning up..." |tee -a reckon 2>/dev/null
+	
+	# Kill all background processes
+	debug_log_msg "Cleaning up background processes" "WARN"
+	for pid in "${BACKGROUND_PIDS[@]}"; do
+		if kill -0 "$pid" 2>/dev/null; then
+			debug_log_msg "Killing background process: $pid" "DEBUG"
+			kill -TERM "$pid" 2>/dev/null || true
+			sleep 0.5
+			kill -KILL "$pid" 2>/dev/null || true
+		fi
+	done
+	
+	# Kill any remaining nmap/nikto/dirb processes
+	pkill -P $SCRIPT_PID 2>/dev/null || true
+	
+	# Cleanup temporary files
+	rm -f *.tmp 2>/dev/null || true
+	rm -f *-nikto.tmp 2>/dev/null || true
+	
+	# Remove hosts entry if added
+	cleanup_hosts_entry
+	
+	# Log exit status
+	debug_log_msg "Scan interrupted by user (exit code: $exit_code)" "WARN"
+	
+	echo -e "${RED}[!]${NC} Scan cancelled. Results saved to: $(pwd)" |tee -a reckon 2>/dev/null
+	echo -e "${YELLOW}[*]${NC} Elapsed time: $(( SECONDS / 60 ))m $(( SECONDS % 60 ))s" |tee -a reckon 2>/dev/null
+	
+	exit $exit_code
+}
+
+# Set up signal traps
+trap cleanup_on_exit SIGINT SIGTERM EXIT
+
 # === INTERACTIVE CONFIGURATION (Metasploit-style) ===
 show_options() {
 	echo -e "${BLUE}======= wReckon Configuration Options =======${NC}"
@@ -719,6 +763,7 @@ discover_paths() { # Unified directory/path discovery using available tools
 	if [[ "${tool_available[feroxbuster]}" == true ]]; then
 		echo "[-]      Using feroxbuster for recursive discovery..." |tee -a reckon
 		feroxbuster -u "$discover_url" -w /usr/share/wordlists/dirb/common.txt --timeout 5 -s 200,204,301,302,307,401,403,500 -o ${discover_port}-feroxbuster.txt 2>/dev/null &
+		BACKGROUND_PIDS+=($!)
 		return
 	fi
 	
@@ -726,6 +771,7 @@ discover_paths() { # Unified directory/path discovery using available tools
 	if [[ "${tool_available[ffuf]}" == true ]]; then
 		echo "[-]      Using ffuf for path discovery..." |tee -a reckon
 		ffuf -u "${discover_url}/FUZZ" -w /usr/share/wordlists/dirb/common.txt -H "User-Agent: Mozilla/5.0" -o ${discover_port}-ffuf.txt -of json 2>/dev/null &
+		BACKGROUND_PIDS+=($!)
 		return
 	fi
 	
@@ -733,6 +779,7 @@ discover_paths() { # Unified directory/path discovery using available tools
 	if [[ "${tool_available[wfuzz]}" == true ]]; then
 		echo "[-]      Using wfuzz for path discovery..." |tee -a reckon
 		wfuzz -w /usr/share/wordlists/dirb/common.txt --hc 404 -u "${discover_url}/FUZZ" -o ${discover_port}-wfuzz.txt 2>/dev/null &
+		BACKGROUND_PIDS+=($!)
 		return
 	fi
 	
@@ -740,6 +787,7 @@ discover_paths() { # Unified directory/path discovery using available tools
 	if [[ "${tool_available[gobuster]}" == true ]]; then
 		echo "[-]      Using gobuster for path discovery..." |tee -a reckon
 		gobuster dir -u "$discover_url" -w /usr/share/wordlists/dirb/common.txt --timeout 5s -o ${discover_port}-gobuster.txt 2>/dev/null &
+		BACKGROUND_PIDS+=($!)
 		return
 	fi
 	
@@ -747,6 +795,7 @@ discover_paths() { # Unified directory/path discovery using available tools
 	if [[ "${tool_available[dirb]}" == true ]]; then
 		echo "[-]      Using dirb for path discovery..." |tee -a reckon
 		dirb "$discover_url" /usr/share/wordlists/dirb/common.txt -o ${discover_port}-dirb.txt 2>/dev/null &
+		BACKGROUND_PIDS+=($!)
 		return
 	fi
 	
@@ -765,6 +814,7 @@ enumerate_subdomains() { # Unified subdomain discovery
 	if [[ "${tool_available[subfinder]}" == true ]]; then
 		echo "[-]      Using subfinder for subdomain enumeration..." |tee -a reckon
 		subfinder -d "$target" -silent -o subdomain-subfinder.txt 2>/dev/null &
+		BACKGROUND_PIDS+=($!)
 		return
 	fi
 	
@@ -772,6 +822,7 @@ enumerate_subdomains() { # Unified subdomain discovery
 	if [[ "${tool_available[assetfinder]}" == true ]]; then
 		echo "[-]      Using assetfinder for subdomain enumeration..." |tee -a reckon
 		assetfinder --subs-only "$target" > subdomain-assetfinder.txt 2>/dev/null &
+		BACKGROUND_PIDS+=($!)
 		return
 	fi
 	
@@ -779,6 +830,7 @@ enumerate_subdomains() { # Unified subdomain discovery
 	if [[ "${tool_available[ffuf]}" == true ]] && [[ -n "$(command -v dig)" ]]; then
 		echo "[-]      Using ffuf for DNS subdomain brute-force..." |tee -a reckon
 		ffuf -u "http://FUZZ.$target" -w /usr/share/wordlists/dirb/common.txt -H "User-Agent: Mozilla/5.0" -o subdomain-ffuf.txt -of json -match FQDN 2>/dev/null &
+		BACKGROUND_PIDS+=($!)
 		return
 	fi
 	
@@ -812,14 +864,18 @@ httpenum(){ # Runs various scanners against http and https ports - ENHANCED
 	done
 	
 	# Run subdomain enumeration
-	enumerate_subdomains&
+	enumerate_subdomains &
+	BACKGROUND_PIDS+=($!)
 	
-	niktohttp&
-	dirbhttp&
+	niktohttp &
+	BACKGROUND_PIDS+=($!)
+	dirbhttp &
+	BACKGROUND_PIDS+=($!)
 	
 	# Run in background if tools available
 	if [[ "${tool_available[sqlmap]}" == true ]] && [[ "$web_vuln_scan" == "True" ]]; then
-		sqlmap_scan&
+		sqlmap_scan &
+		BACKGROUND_PIDS+=($!)
 	fi
 }
 
