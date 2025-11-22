@@ -27,6 +27,10 @@ web_vuln_scan=True
 password_test=False
 # Enable service vulnerability assessment
 service_vuln_scan=True
+# Enable directory/path discovery (ffuf, feroxbuster, gobuster, wfuzz)
+path_discovery=True
+# Enable subdomain enumeration
+subdomain_enum=True
 
 # === MODULE TOGGLES (Future Expansion) ===
 # Enable API testing module (REST/GraphQL/SOAP)
@@ -81,6 +85,8 @@ show_options() {
 	echo -e "  web_vuln_scan       => $web_vuln_scan        (Web app vulnerability scanning)"
 	echo -e "  service_vuln_scan   => $service_vuln_scan    (Service vulnerability assessment)"
 	echo -e "  password_test       => $password_test        (Password policy testing)"
+	echo -e "  path_discovery      => $path_discovery       (Directory/path discovery)"
+	echo -e "  subdomain_enum      => $subdomain_enum       (Subdomain enumeration)"
 	echo ""
 	echo -e "${GREEN}MODULE TOGGLES:${NC}"
 	echo -e "  api_testing         => $api_testing          (API testing module)"
@@ -154,7 +160,7 @@ interactive_config() {
 					echo -e "${RED}[!] Invalid value (must be number)${NC}"
 				fi
 				;;
-			tcp|udp|dns_enum|ssl_scan|owasp_scan|web_vuln_scan|password_test|service_vuln_scan|api_testing|cloud_testing|container_testing|iac_testing|network_monitor|auto_hosts)
+			tcp|udp|dns_enum|ssl_scan|owasp_scan|web_vuln_scan|password_test|service_vuln_scan|path_discovery|subdomain_enum|api_testing|cloud_testing|container_testing|iac_testing|network_monitor|auto_hosts)
 				if [[ "$value" =~ ^(True|true|False|false|1|0)$ ]]; then
 					# Normalize to True/False
 					[[ "$value" =~ ^(True|true|1)$ ]] && value="True" || value="False"
@@ -198,6 +204,11 @@ check_tools_availability() {
 	command -v "zaproxy" &> /dev/null && tool_available["zaproxy"]=true || tool_available["zaproxy"]=false
 	command -v "nuclei" &> /dev/null && tool_available["nuclei"]=true || tool_available["nuclei"]=false
 	command -v "ffuf" &> /dev/null && tool_available["ffuf"]=true || tool_available["ffuf"]=false
+	command -v "feroxbuster" &> /dev/null && tool_available["feroxbuster"]=true || tool_available["feroxbuster"]=false
+	command -v "gobuster" &> /dev/null && tool_available["gobuster"]=true || tool_available["gobuster"]=false
+	command -v "wfuzz" &> /dev/null && tool_available["wfuzz"]=true || tool_available["wfuzz"]=false
+	command -v "subfinder" &> /dev/null && tool_available["subfinder"]=true || tool_available["subfinder"]=false
+	command -v "assetfinder" &> /dev/null && tool_available["assetfinder"]=true || tool_available["assetfinder"]=false
 }
 
 # === PORT RESPONSIVENESS CHECKING ===
@@ -646,6 +657,87 @@ information_disclosure_scan() { # Check for information disclosure
 	done
 }
 
+# === DIRECTORY & PATH DISCOVERY ===
+discover_paths() { # Unified directory/path discovery using available tools
+	if [[ "$path_discovery" != "True" ]]; then
+		return
+	fi
+	
+	local discover_port=$1
+	local discover_url=$2
+	
+	echo -e "${GREEN}[!]${NC} Discovering paths and directories on $discover_url" |tee -a reckon
+	
+	# Try feroxbuster first (fastest, recursive)
+	if [[ "${tool_available[feroxbuster]}" == true ]]; then
+		echo "[-]      Using feroxbuster for recursive discovery..." |tee -a reckon
+		feroxbuster -u "$discover_url" -w /usr/share/wordlists/dirb/common.txt --timeout 5 -s 200,204,301,302,307,401,403,500 -o ${discover_port}-feroxbuster.txt 2>/dev/null &
+		return
+	fi
+	
+	# Fall back to ffuf (fast, flexible)
+	if [[ "${tool_available[ffuf]}" == true ]]; then
+		echo "[-]      Using ffuf for path discovery..." |tee -a reckon
+		ffuf -u "${discover_url}/FUZZ" -w /usr/share/wordlists/dirb/common.txt -H "User-Agent: Mozilla/5.0" -o ${discover_port}-ffuf.txt -of json 2>/dev/null &
+		return
+	fi
+	
+	# Try wfuzz
+	if [[ "${tool_available[wfuzz]}" == true ]]; then
+		echo "[-]      Using wfuzz for path discovery..." |tee -a reckon
+		wfuzz -w /usr/share/wordlists/dirb/common.txt --hc 404 -u "${discover_url}/FUZZ" -o ${discover_port}-wfuzz.txt 2>/dev/null &
+		return
+	fi
+	
+	# Try gobuster
+	if [[ "${tool_available[gobuster]}" == true ]]; then
+		echo "[-]      Using gobuster for path discovery..." |tee -a reckon
+		gobuster dir -u "$discover_url" -w /usr/share/wordlists/dirb/common.txt --timeout 5s -o ${discover_port}-gobuster.txt 2>/dev/null &
+		return
+	fi
+	
+	# Fall back to dirb
+	if [[ "${tool_available[dirb]}" == true ]]; then
+		echo "[-]      Using dirb for path discovery..." |tee -a reckon
+		dirb "$discover_url" /usr/share/wordlists/dirb/common.txt -o ${discover_port}-dirb.txt 2>/dev/null &
+		return
+	fi
+	
+	echo "[-]      No path discovery tools available" |tee -a reckon
+}
+
+# === SUBDOMAIN ENUMERATION ===
+enumerate_subdomains() { # Unified subdomain discovery
+	if [[ "$subdomain_enum" != "True" ]]; then
+		return
+	fi
+	
+	echo -e "${GREEN}[!]${NC} Enumerating subdomains for $target" |tee -a reckon
+	
+	# Try subfinder first (fastest, most passive)
+	if [[ "${tool_available[subfinder]}" == true ]]; then
+		echo "[-]      Using subfinder for subdomain enumeration..." |tee -a reckon
+		subfinder -d "$target" -silent -o subdomain-subfinder.txt 2>/dev/null &
+		return
+	fi
+	
+	# Try assetfinder
+	if [[ "${tool_available[assetfinder]}" == true ]]; then
+		echo "[-]      Using assetfinder for subdomain enumeration..." |tee -a reckon
+		assetfinder --subs-only "$target" > subdomain-assetfinder.txt 2>/dev/null &
+		return
+	fi
+	
+	# Try DNS brute-forcing with ffuf
+	if [[ "${tool_available[ffuf]}" == true ]] && [[ -n "$(command -v dig)" ]]; then
+		echo "[-]      Using ffuf for DNS subdomain brute-force..." |tee -a reckon
+		ffuf -u "http://FUZZ.$target" -w /usr/share/wordlists/dirb/common.txt -H "User-Agent: Mozilla/5.0" -o subdomain-ffuf.txt -of json -match FQDN 2>/dev/null &
+		return
+	fi
+	
+	echo "[-]      No subdomain enumeration tools available (install subfinder or assetfinder)" |tee -a reckon
+}
+
 httpenum(){ # Runs various scanners against http and https ports - ENHANCED
 	
 	for wports in $(cat .openports |grep http |grep -v "Microsoft Windows RPC over HTTP" |awk '{print$1}' |awk -F "/" '{print$1}' |sort -g); do
@@ -663,7 +755,17 @@ httpenum(){ # Runs various scanners against http and https ports - ENHANCED
 		if [[ "${tool_available[nuclei]}" == true ]]; then
 			nuclei_scan
 		fi
+		
+		# Run path discovery
+		if [[ $wports == "443" ]]; then
+			discover_paths $wports "https://$target"
+		else
+			discover_paths $wports "http://$target:$wports"
+		fi
 	done
+	
+	# Run subdomain enumeration
+	enumerate_subdomains&
 	
 	niktohttp&
 	dirbhttp&
