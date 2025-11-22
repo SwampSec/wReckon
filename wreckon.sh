@@ -63,8 +63,8 @@ pcap_output_dir="pcap_captures"
 # === DEBUGGING ===
 # Enable debug logging for hang diagnostics (True/False)
 debug=False
-# Debug log file
-debug_log="wreckon_debug.log"
+# Debug log file (will be set to target directory during mainfunction)
+debug_log=""
 
 # === HOSTS FILE MANAGEMENT ===
 # Auto-add target to /etc/hosts (True/False)
@@ -1144,7 +1144,10 @@ debug_log_msg() {
 	local level="${2:-INFO}"
 	if [[ "$debug" == "True" ]]; then
 		local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-		echo "[$timestamp] [$level] $msg" >> "$debug_log"
+		# Only write to file if debug_log is initialized
+		if [[ -n "$debug_log" ]]; then
+			echo "[$timestamp] [$level] $msg" >> "$debug_log"
+		fi
 		echo -e "${BLUE}[DEBUG]${NC} $msg"
 	fi
 }
@@ -1830,6 +1833,15 @@ mainfunction(){ # Runs enumeration functions for a single host $1 user arguement
 	mkdir $workdir/$target 2> /dev/null
 	cd $workdir/$target
 	echo -e "${GREEN}[!]${NC} Testing directory created at: $(pwd) " |tee -a reckon
+
+	# Initialize debug log in target directory
+	debug_log="$(pwd)/wreckon_debug.log"
+	if [[ "$debug" == "True" ]]; then
+		echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] Debug logging initialized for target: $target" > "$debug_log"
+		debug_log_msg "Scan directory: $(pwd)"
+		debug_log_msg "Target: $target"
+		debug_log_msg "Top ports: $tports"
+	fi
 
 	# Check tool availability
 	check_tools_availability
