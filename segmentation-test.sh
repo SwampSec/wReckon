@@ -33,6 +33,18 @@ NC='\033[0m'
 # Runtime tracking
 SECONDS=0
 
+# === RESULTS TRACKING ===
+declare -A results=(
+	[icmp_responsive]="UNKNOWN"
+	[tcp_accessible]="UNKNOWN"
+	[udp_accessible]="UNKNOWN"
+	[traceroute_success]="UNKNOWN"
+	[ipv6_support]="UNKNOWN"
+)
+
+declare -a open_ports=()
+declare -a filtered_ports=()
+
 # === UTILITY FUNCTIONS ===
 
 # Hosts file management
@@ -301,7 +313,110 @@ generate_report() {
 	echo -e "${GREEN}[!] Scan Duration: $(($SECONDS / 60)) minutes, $((($SECONDS % 60))) seconds${NC}" |tee -a segmentation-scan.log
 	echo "" |tee -a segmentation-scan.log
 	
-	# Summary of findings
+	# === CONNECTIVITY RESULTS TABLE ===
+	echo -e "${BLUE}[TABLE] Connectivity Results:${NC}" |tee -a segmentation-scan.log
+	echo "╔════════════════════════╦═══════════╦══════════════════╗" |tee -a segmentation-scan.log
+	echo "║ Test Type              ║ Status    ║ Firewall Impact  ║" |tee -a segmentation-scan.log
+	echo "╠════════════════════════╬═══════════╬══════════════════╣" |tee -a segmentation-scan.log
+	
+	# ICMP Status
+	if grep -q "responds to ICMP" segmentation-scan.log; then
+		results[icmp_responsive]="PASS"
+		icmp_status="✓ OPEN"
+		firewall_impact="None"
+	else
+		results[icmp_responsive]="FAIL"
+		icmp_status="✗ BLOCKED"
+		firewall_impact="ICMP Filtered"
+	fi
+	printf "║ %-22s ║ %-9s ║ %-16s ║\n" "ICMP/Ping" "$icmp_status" "$firewall_impact" |tee -a segmentation-scan.log
+	
+	# TCP Status
+	tcp_open=$(grep -r "open" tcp-test-*.txt 2>/dev/null | wc -l)
+	if [[ $tcp_open -gt 0 ]]; then
+		results[tcp_accessible]="PASS"
+		tcp_status="✓ OPEN"
+		tcp_impact="Ports Accessible"
+	else
+		results[tcp_accessible]="FAIL"
+		tcp_status="✗ BLOCKED"
+		tcp_impact="All TCP Filtered"
+	fi
+	printf "║ %-22s ║ %-9s ║ %-16s ║\n" "TCP Connectivity" "$tcp_status" "$tcp_impact" |tee -a segmentation-scan.log
+	
+	# UDP Status
+	udp_open=$(grep -r "open" udp-test-*.txt 2>/dev/null | wc -l)
+	if [[ $udp_open -gt 0 ]]; then
+		results[udp_accessible]="PASS"
+		udp_status="✓ OPEN"
+		udp_impact="Ports Accessible"
+	else
+		results[udp_accessible]="FAIL"
+		udp_status="✗ BLOCKED"
+		udp_impact="All UDP Filtered"
+	fi
+	printf "║ %-22s ║ %-9s ║ %-16s ║\n" "UDP Connectivity" "$udp_status" "$udp_impact" |tee -a segmentation-scan.log
+	
+	# Traceroute Status
+	if [[ -f traceroute-*.txt ]] && grep -q "reached\|hops" traceroute-*.txt 2>/dev/null; then
+		results[traceroute_success]="PASS"
+		tr_status="✓ SUCCESS"
+		tr_impact="Route Available"
+	else
+		results[traceroute_success]="FAIL"
+		tr_status="✗ FAILED"
+		tr_impact="Route Blocked"
+	fi
+	printf "║ %-22s ║ %-9s ║ %-16s ║\n" "Traceroute" "$tr_status" "$tr_impact" |tee -a segmentation-scan.log
+	echo "╚════════════════════════╩═══════════╩══════════════════╝" |tee -a segmentation-scan.log
+	echo "" |tee -a segmentation-scan.log
+	
+	# === COMPLIANCE & SECURITY ASSESSMENT ===
+	echo -e "${BLUE}[ASSESSMENT] Compliance & Security Status:${NC}" |tee -a segmentation-scan.log
+	echo "╔═══════════════════════════════════════════════════════════╦══════════════╗" |tee -a segmentation-scan.log
+	echo "║ Compliance Framework                                      ║ Status       ║" |tee -a segmentation-scan.log
+	echo "╠═══════════════════════════════════════════════════════════╬══════════════╣" |tee -a segmentation-scan.log
+	
+	# PCI-DSS Compliance
+	if [[ "${results[icmp_responsive]}" == "FAIL" ]] && [[ "${results[tcp_accessible]}" == "FAIL" ]] && [[ "${results[udp_accessible]}" == "FAIL" ]]; then
+		pci_status="✓ PASS"
+		pci_note="Proper Segmentation"
+	else
+		pci_status="✗ FAIL"
+		pci_note="Network Open"
+	fi
+	printf "║ %-59s ║ %-12s ║\n" "PCI-DSS (Network Segmentation)" "$pci_status" |tee -a segmentation-scan.log
+	printf "║   └─ %-56s ║              ║\n" "$pci_note" |tee -a segmentation-scan.log
+	
+	# HIPAA Compliance
+	if [[ "${results[icmp_responsive]}" == "FAIL" ]] || [[ "${results[tcp_accessible]}" == "FAIL" ]]; then
+		hipaa_status="✓ PASS"
+		hipaa_note="Access Controls Active"
+	else
+		hipaa_status="✗ FAIL"
+		hipaa_note="Insufficient Controls"
+	fi
+	printf "║ %-59s ║ %-12s ║\n" "HIPAA (Access Controls)" "$hipaa_status" |tee -a segmentation-scan.log
+	printf "║   └─ %-56s ║              ║\n" "$hipaa_note" |tee -a segmentation-scan.log
+	
+	# SOC2 Compliance
+	if [[ $tcp_open -gt 0 ]]; then
+		soc2_status="✓ PASS"
+		soc2_note="Accessible per Audit"
+	else
+		soc2_status="⚠ WARN"
+		soc2_note="Limited Accessibility"
+	fi
+	printf "║ %-59s ║ %-12s ║\n" "SOC2 Type II (Availability)" "$soc2_status" |tee -a segmentation-scan.log
+	printf "║   └─ %-56s ║              ║\n" "$soc2_note" |tee -a segmentation-scan.log
+	
+	echo "╚═══════════════════════════════════════════════════════════╩══════════════╝" |tee -a segmentation-scan.log
+	echo "" |tee -a segmentation-scan.log
+	
+	# === DETAILED FINDINGS ===
+	echo -e "${BLUE}[DETAILS] Port & Protocol Analysis:${NC}" |tee -a segmentation-scan.log
+	echo "" |tee -a segmentation-scan.log
+	
 	echo -e "${GREEN}[!] ICMP Summary:${NC}" |tee -a segmentation-scan.log
 	if grep -q "responds to ICMP" segmentation-scan.log; then
 		echo "[-]      ✓ Target responds to ICMP (not firewalled)" |tee -a segmentation-scan.log
@@ -310,17 +425,19 @@ generate_report() {
 	fi
 	
 	echo "" |tee -a segmentation-scan.log
-	echo -e "${GREEN}[!] TCP Results:${NC}" |tee -a segmentation-scan.log
-	if grep -r "open" tcp-test-*.txt 2>/dev/null | wc -l | grep -qv "^0$"; then
-		echo "[-]      Some TCP ports are accessible" |tee -a segmentation-scan.log
+	echo -e "${GREEN}[!] TCP Results ($tcp_open ports open):${NC}" |tee -a segmentation-scan.log
+	if [[ $tcp_open -gt 0 ]]; then
+		echo "[-]      Some TCP ports are accessible:" |tee -a segmentation-scan.log
+		grep -r "open" tcp-test-*.txt 2>/dev/null | sed 's/^/[-]        /' |tee -a segmentation-scan.log
 	else
 		echo "[-]      All TCP ports filtered" |tee -a segmentation-scan.log
 	fi
 	
 	echo "" |tee -a segmentation-scan.log
-	echo -e "${GREEN}[!] UDP Results:${NC}" |tee -a segmentation-scan.log
-	if grep -r "open" udp-test-*.txt 2>/dev/null | wc -l | grep -qv "^0$"; then
-		echo "[-]      Some UDP ports are accessible" |tee -a segmentation-scan.log
+	echo -e "${GREEN}[!] UDP Results ($udp_open ports open):${NC}" |tee -a segmentation-scan.log
+	if [[ $udp_open -gt 0 ]]; then
+		echo "[-]      Some UDP ports are accessible:" |tee -a segmentation-scan.log
+		grep -r "open" udp-test-*.txt 2>/dev/null | sed 's/^/[-]        /' |tee -a segmentation-scan.log
 	else
 		echo "[-]      All UDP ports filtered" |tee -a segmentation-scan.log
 	fi
@@ -328,6 +445,25 @@ generate_report() {
 	echo "" |tee -a segmentation-scan.log
 	echo -e "${GREEN}[!] Output Files:${NC}" |tee -a segmentation-scan.log
 	ls -1 | grep -E "^(icmp|tcp|udp|traceroute)" |tee -a segmentation-scan.log
+	
+	echo "" |tee -a segmentation-scan.log
+	
+	# === RISK RATING ===
+	echo -e "${BLUE}[RISK] Overall Network Isolation Rating:${NC}" |tee -a segmentation-scan.log
+	risk_score=0
+	[[ "${results[icmp_responsive]}" == "PASS" ]] && ((risk_score+=25))
+	[[ "${results[tcp_accessible]}" == "PASS" ]] && ((risk_score+=25))
+	[[ "${results[udp_accessible]}" == "PASS" ]] && ((risk_score+=25))
+	
+	if [[ $risk_score -eq 0 ]]; then
+		echo -e "[-]      ${GREEN}EXCELLENT${NC} (0/75 - Fully Isolated)" |tee -a segmentation-scan.log
+	elif [[ $risk_score -le 25 ]]; then
+		echo -e "[-]      ${YELLOW}GOOD${NC} (1-2 vectors open - Minor Risk)" |tee -a segmentation-scan.log
+	elif [[ $risk_score -le 50 ]]; then
+		echo -e "[-]      ${YELLOW}FAIR${NC} (2-3 vectors open - Moderate Risk)" |tee -a segmentation-scan.log
+	else
+		echo -e "[-]      ${RED}POOR${NC} (All vectors open - High Risk)" |tee -a segmentation-scan.log
+	fi
 	
 	echo "" |tee -a segmentation-scan.log
 }

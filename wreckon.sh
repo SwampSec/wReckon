@@ -542,28 +542,36 @@ web_app_vuln_scan() { # Comprehensive web application vulnerability scanning
 		
 		# OWASP Top 10 checks via NSE
 		echo "[-]      Running OWASP Top 10 checks on $web_url" |tee -a reckon
-		nmap --script http-vuln*,http-csrf*,http-slowloris* -p $wport $target -oN $wport-owasp 2>/dev/null 1>/dev/null
+		echo "[-]        [*] Scanning: http-vuln*, http-csrf*, http-slowloris* scripts..." |tee -a reckon
+		nmap --script http-vuln*,http-csrf*,http-slowloris* -p $wport $target -oN $wport-owasp 2>&1 | grep -E 'Starting|Completed|Progress' |tee -a reckon
 		
 		findings=$(cat $wport-owasp |grep "|" |wc -l)
 		if [[ "$findings" -gt "0" ]]; then
+			echo "[-]        [+] Found $findings OWASP vulnerabilities" |tee -a reckon
 			IFS=$'\n'
 			for vuln in $(cat $wport-owasp |grep "|" |cut -c 3-); do
-				echo "[-]        $vuln" |tee -a reckon
+				echo "[-]          $vuln" |tee -a reckon
 			done
 			unset IFS
+		else
+			echo "[-]        [-] No OWASP vulnerabilities found" |tee -a reckon
 		fi
 		
 		# Additional checks
 		echo "[-]      Checking for common vulnerabilities:" |tee -a reckon
-		nmap --script http-open-proxy,http-trace,http-auth-finder,http-sitemap-generator -p $wport $target -oN $wport-common-vuln 2>/dev/null 1>/dev/null
+		echo "[-]        [*] Scanning: http-open-proxy, http-trace, http-auth-finder, http-sitemap-generator..." |tee -a reckon
+		nmap --script http-open-proxy,http-trace,http-auth-finder,http-sitemap-generator -p $wport $target -oN $wport-common-vuln 2>&1 | grep -E 'Starting|Completed|Progress' |tee -a reckon
 		
 		findings=$(cat $wport-common-vuln |grep "|" |wc -l)
 		if [[ "$findings" -gt "0" ]]; then
+			echo "[-]        [+] Found $findings common vulnerabilities" |tee -a reckon
 			IFS=$'\n'
 			for vuln in $(cat $wport-common-vuln |grep "|" |cut -c 3-); do
-				echo "[-]        $vuln" |tee -a reckon
+				echo "[-]          $vuln" |tee -a reckon
 			done
 			unset IFS
+		else
+			echo "[-]        [-] No common vulnerabilities found" |tee -a reckon
 		fi
 	done
 }
@@ -585,12 +593,23 @@ pathtraversal_scan() { # Test for path traversal vulnerabilities
 		fi
 		
 		# Simple path traversal tests
+		echo "[-]      [*] Testing common path traversal patterns..." |tee -a reckon
+		local pt_count=0
 		for path in "etc/passwd" "..%2fwindows%2fsystem32" "....//....//....//etc/passwd"; do
+			echo "[-]        [*] Testing: $path" |tee -a reckon
 			response=$(curl -s "$web_url/$path" 2>/dev/null | head -c 200)
 			if [[ ! -z "$response" ]] && [[ "$response" != *"404"* ]] && [[ "$response" != *"not found"* ]]; then
-				echo -e "${RED}[!] Path Traversal possible: $path${NC}" |tee -a reckon
+				echo -e "${RED}[!]        [+] Path Traversal FOUND: $path${NC}" |tee -a reckon
+				((pt_count++))
+			else
+				echo "[-]        [-] Path blocked/404: $path" |tee -a reckon
 			fi
 		done
+		if [[ $pt_count -eq 0 ]]; then
+			echo "[-]      [-] No path traversal vulnerabilities found" |tee -a reckon
+		else
+			echo "[-]      [+] Found $pt_count potential path traversal vulnerabilities" |tee -a reckon
+		fi
 	done
 }
 
@@ -610,16 +629,19 @@ information_disclosure_scan() { # Check for information disclosure
 			continue
 		fi
 		
-		nmap --script http-methods,http-server-header,http-xssed,http-git,http-svn-enum -p $wport $target -oN $wport-info-disclosure 2>/dev/null 1>/dev/null
+		echo "[-]      [*] Scanning: http-methods, http-server-header, http-xssed, http-git, http-svn-enum..." |tee -a reckon
+		nmap --script http-methods,http-server-header,http-xssed,http-git,http-svn-enum -p $wport $target -oN $wport-info-disclosure 2>&1 | grep -E 'Starting|Completed|Progress' |tee -a reckon
 		
 		findings=$(cat $wport-info-disclosure |grep "|" |wc -l)
 		if [[ "$findings" -gt "0" ]]; then
-			echo "[-]      Information Disclosure findings:" |tee -a reckon
+			echo "[-]      [+] Information Disclosure findings: ($findings items)" |tee -a reckon
 			IFS=$'\n'
 			for info in $(cat $wport-info-disclosure |grep "|" |cut -c 3-); do
 				echo "[-]        $info" |tee -a reckon
 			done
 			unset IFS
+		else
+			echo "[-]      [-] No information disclosure found" |tee -a reckon
 		fi
 	done
 }
