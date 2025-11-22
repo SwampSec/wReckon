@@ -40,10 +40,15 @@ declare -A results=(
 	[udp_accessible]="UNKNOWN"
 	[traceroute_success]="UNKNOWN"
 	[ipv6_support]="UNKNOWN"
+	[pci_compliance]="UNKNOWN"
+	[tcp_flow_direction]="UNKNOWN"
+	[udp_flow_direction]="UNKNOWN"
 )
 
 declare -a open_ports=()
 declare -a filtered_ports=()
+declare -a tcp_results=()
+declare -a udp_results=()
 
 # === UTILITY FUNCTIONS ===
 
@@ -121,6 +126,29 @@ detect_ip_version() {
 	fi
 }
 
+# === NETWORK FLOW ANALYSIS ===
+analyze_tcp_flow_direction() {
+	local target_ip=$1
+	local test_port=$2
+	
+	# Check if we got a response (ingress/inbound allowed)
+	if nc -z -w 2 "$target_ip" "$test_port" 2>/dev/null; then
+		echo "INBOUND"  # Target accepted our connection (ingress allowed)
+		return 0
+	else
+		# Try to determine if outbound is blocked or if service isn't listening
+		# If we can curl/wget but can't nc, it suggests firewall allows egress
+		if command -v curl &> /dev/null; then
+			if curl -s -m 2 "http://$target_ip:$test_port" 2>/dev/null | head -c 10 &>/dev/null; then
+				echo "OUTBOUND"  # Our outbound is allowed, target responded
+				return 0
+			fi
+		fi
+		echo "BLOCKED"  # Port appears truly blocked
+		return 1
+	fi
+}
+
 # === ICMP RECONNAISSANCE ===
 icmp_test() {
 	local test_target=$1
@@ -176,6 +204,10 @@ tcp_connectivity_test() {
 	local ports=(22 25 53 80 110 143 443 445 3306 3389 5432 8080 8443)
 	
 	echo "[-]      Testing ports: ${ports[@]}" |tee -a segmentation-scan.log
+	echo "[-]      Analyzing traffic direction (INBOUND/OUTBOUND/BLOCKED)..." |tee -a segmentation-scan.log
+	
+	local inbound_count=0
+	local outbound_count=0
 	
 	for port in "${ports[@]}"; do
 		if command -v "nc" &> /dev/null; then
@@ -191,14 +223,34 @@ tcp_connectivity_test() {
 				nmap -p $port --open -n $test_target 2>/dev/null | grep "open" >> tcp-test-${ip_type}.txt 2>&1
 			fi
 		fi
+		
+		# Analyze flow direction for open ports
+		if grep -q "$port" tcp-test-${ip_type}.txt 2>/dev/null; then
+			local flow=$(analyze_tcp_flow_direction "$test_target" "$port")
+			if [[ "$flow" == "INBOUND" ]]; then
+				((inbound_count++))
+				echo "[-]      Port $port: OPEN [INBOUND - Ingress allowed]" |tee -a segmentation-scan.log
+			elif [[ "$flow" == "OUTBOUND" ]]; then
+				((outbound_count++))
+				echo "[-]      Port $port: OPEN [OUTBOUND - Egress only]" |tee -a segmentation-scan.log
+			fi
+		fi
 	done
 	
 	# Display results
 	if [[ -f "tcp-test-${ip_type}.txt" ]] && [[ -s "tcp-test-${ip_type}.txt" ]]; then
-		echo -e "${GREEN}[✓]${NC} Accessible TCP ports:" |tee -a segmentation-scan.log
+		echo -e "${GREEN}[✓]${NC} Accessible TCP ports (Inbound: $inbound_count, Outbound: $outbound_count):" |tee -a segmentation-scan.log
 		cat tcp-test-${ip_type}.txt |tee -a segmentation-scan.log
+		
+		# Store for compliance check
+		if [[ $inbound_count -gt 0 ]]; then
+			results[tcp_flow_direction]="INBOUND"
+		elif [[ $outbound_count -gt 0 ]]; then
+			results[tcp_flow_direction]="OUTBOUND"
+		fi
 	else
-		echo -e "${YELLOW}[!]${NC} No open TCP ports detected" |tee -a segmentation-scan.log
+		echo -e "${YELLOW}[!]${NC} No open TCP ports detected (All TCP filtered)" |tee -a segmentation-scan.log
+		results[tcp_flow_direction]="BLOCKED"
 	fi
 	
 	echo "" |tee -a segmentation-scan.log
@@ -377,13 +429,20 @@ generate_report() {
 	echo "║ Compliance Framework                                      ║ Status       ║" |tee -a segmentation-scan.log
 	echo "╠═══════════════════════════════════════════════════════════╬══════════════╣" |tee -a segmentation-scan.log
 	
-	# PCI-DSS Compliance
+	# PCI-DSS Compliance - requires full isolation (no inbound)
 	if [[ "${results[icmp_responsive]}" == "FAIL" ]] && [[ "${results[tcp_accessible]}" == "FAIL" ]] && [[ "${results[udp_accessible]}" == "FAIL" ]]; then
 		pci_status="✓ PASS"
-		pci_note="Proper Segmentation"
+		pci_note="Proper Segmentation (No Inbound)"
+		results[pci_compliance]="PASS"
 	else
 		pci_status="✗ FAIL"
-		pci_note="Network Open"
+		pci_note="Network Not Isolated"
+		results[pci_compliance]="FAIL"
+		
+		# Additional detail if only outbound
+		if [[ "${results[tcp_flow_direction]}" == "OUTBOUND" ]] || [[ "${results[udp_flow_direction]}" == "OUTBOUND" ]]; then
+			pci_note="Outbound Allowed (No Inbound)"
+		fi
 	fi
 	printf "║ %-59s ║ %-12s ║\n" "PCI-DSS (Network Segmentation)" "$pci_status" |tee -a segmentation-scan.log
 	printf "║   └─ %-56s ║              ║\n" "$pci_note" |tee -a segmentation-scan.log
@@ -392,9 +451,11 @@ generate_report() {
 	if [[ "${results[icmp_responsive]}" == "FAIL" ]] || [[ "${results[tcp_accessible]}" == "FAIL" ]]; then
 		hipaa_status="✓ PASS"
 		hipaa_note="Access Controls Active"
+		results[hipaa_compliance]="PASS"
 	else
 		hipaa_status="✗ FAIL"
 		hipaa_note="Insufficient Controls"
+		results[hipaa_compliance]="FAIL"
 	fi
 	printf "║ %-59s ║ %-12s ║\n" "HIPAA (Access Controls)" "$hipaa_status" |tee -a segmentation-scan.log
 	printf "║   └─ %-56s ║              ║\n" "$hipaa_note" |tee -a segmentation-scan.log
@@ -403,14 +464,64 @@ generate_report() {
 	if [[ $tcp_open -gt 0 ]]; then
 		soc2_status="✓ PASS"
 		soc2_note="Accessible per Audit"
+		results[soc2_compliance]="PASS"
 	else
 		soc2_status="⚠ WARN"
 		soc2_note="Limited Accessibility"
+		results[soc2_compliance]="WARN"
 	fi
 	printf "║ %-59s ║ %-12s ║\n" "SOC2 Type II (Availability)" "$soc2_status" |tee -a segmentation-scan.log
 	printf "║   └─ %-56s ║              ║\n" "$soc2_note" |tee -a segmentation-scan.log
 	
 	echo "╚═══════════════════════════════════════════════════════════╩══════════════╝" |tee -a segmentation-scan.log
+	echo "" |tee -a segmentation-scan.log
+	
+	# === NETWORK FLOW DIRECTION ANALYSIS ===
+	echo -e "${BLUE}[FLOW] Network Traffic Direction Analysis:${NC}" |tee -a segmentation-scan.log
+	echo "╔════════════════════════╦════════════╦═══════════════════════════════╗" |tee -a segmentation-scan.log
+	echo "║ Protocol               ║ Direction  ║ Security Implication          ║" |tee -a segmentation-scan.log
+	echo "╠════════════════════════╬════════════╬═══════════════════════════════╣" |tee -a segmentation-scan.log
+	
+	# TCP Flow Direction
+	tcp_flow="${results[tcp_flow_direction]}"
+	if [[ "$tcp_flow" == "INBOUND" ]]; then
+		tcp_flow_icon="↓"
+		tcp_implication="Risk: Inbound connections accepted"
+	elif [[ "$tcp_flow" == "OUTBOUND" ]]; then
+		tcp_flow_icon="↑"
+		tcp_implication="Controlled: Outbound only"
+	else
+		tcp_flow_icon="✗"
+		tcp_implication="Secure: All TCP blocked"
+	fi
+	printf "║ %-22s ║ %s %-9s ║ %-29s ║\n" "TCP" "$tcp_flow_icon" "$tcp_flow" "$tcp_implication" |tee -a segmentation-scan.log
+	
+	# UDP Flow Direction
+	udp_flow="${results[udp_flow_direction]}"
+	if [[ "$udp_flow" == "INBOUND" ]]; then
+		udp_flow_icon="↓"
+		udp_implication="Risk: Inbound connections accepted"
+	elif [[ "$udp_flow" == "OUTBOUND" ]]; then
+		udp_flow_icon="↑"
+		udp_implication="Controlled: Outbound only"
+	else
+		udp_flow_icon="✗"
+		udp_implication="Secure: All UDP blocked"
+	fi
+	printf "║ %-22s ║ %s %-9s ║ %-29s ║\n" "UDP" "$udp_flow_icon" "$udp_flow" "$udp_implication" |tee -a segmentation-scan.log
+	
+	# ICMP Flow Direction
+	icmp_flow="${results[icmp_responsive]}"
+	if [[ "$icmp_flow" == "PASS" ]]; then
+		icmp_flow_icon="↓"
+		icmp_implication="Risk: ICMP allowed (reconnaissance)"
+	else
+		icmp_flow_icon="✗"
+		icmp_implication="Secure: ICMP blocked"
+	fi
+	printf "║ %-22s ║ %s %-9s ║ %-29s ║\n" "ICMP/Ping" "$icmp_flow_icon" "$icmp_flow" "$icmp_implication" |tee -a segmentation-scan.log
+	
+	echo "╚════════════════════════╩════════════╩═══════════════════════════════╝" |tee -a segmentation-scan.log
 	echo "" |tee -a segmentation-scan.log
 	
 	# === DETAILED FINDINGS ===
